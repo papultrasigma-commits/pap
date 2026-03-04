@@ -1,66 +1,77 @@
-import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class UserProfile {
-  final String email; // chave
-  String nickname;
+  String email;
+  String username; // O teu nome único (ex: joao123)
+  String nickname; // O nome de exibição (ex: João Inácio)
   String ign;
-  String role; // Duelista/Iniciador/Sentinela/Controlador
-  List<String> mains;
+  String role;
   bool looking;
-  String? avatarBase64;
+  List<String> mains;
 
   UserProfile({
     required this.email,
+    required this.username,
     required this.nickname,
     required this.ign,
     required this.role,
-    required this.mains,
     required this.looking,
-    this.avatarBase64,
+    required this.mains,
   });
-
-  Map<String, dynamic> toJson() => {
-    'email': email,
-    'nickname': nickname,
-    'ign': ign,
-    'role': role,
-    'mains': mains,
-    'looking': looking,
-    'avatarBase64': avatarBase64,
-  };
-
-  static UserProfile fromJson(Map<String, dynamic> j) => UserProfile(
-    email: j['email'],
-    nickname: j['nickname'],
-    ign: j['ign'],
-    role: j['role'],
-    mains: List<String>.from(j['mains'] ?? const []),
-    looking: j['looking'] ?? false,
-    avatarBase64: j['avatarBase64'],
-  );
 }
 
 class ProfileStore {
-  static const _kProfiles = 'profiles_by_email_v1'; // map email->profile json
+  final _supabase = Supabase.instance.client;
 
-  Future<UserProfile?> loadForEmail(String email) async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_kProfiles);
-    if (raw == null || raw.isEmpty) return null;
-    final map = jsonDecode(raw) as Map<String, dynamic>;
-    final item = map[email];
-    if (item == null) return null;
-    return UserProfile.fromJson(Map<String, dynamic>.from(item));
+  Future<UserProfile> loadForEmail(String email) async {
+    final user = _supabase.auth.currentUser;
+    final defaultProfile = UserProfile(email: email, username: '', nickname: '', ign: '', role: 'Duelista', looking: false, mains: []);
+    
+    if (user == null) return defaultProfile;
+
+    try {
+      final data = await _supabase.from('profiles').select().eq('id', user.id).maybeSingle();
+      if (data != null) {
+        return UserProfile(
+          email: email,
+          username: data['username'] ?? '',
+          nickname: data['nickname'] ?? '',
+          ign: data['ign'] ?? '',
+          role: data['role'] ?? 'Duelista',
+          looking: data['looking'] ?? false,
+          mains: List<String>.from(data['mains'] ?? []),
+        );
+      }
+    } catch (e) {
+      print("Erro ao carregar perfil: $e");
+    }
+    return defaultProfile;
   }
 
-  Future<void> save(UserProfile profile) async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_kProfiles);
-    final map = (raw == null || raw.isEmpty)
-        ? <String, dynamic>{}
-        : (jsonDecode(raw) as Map<String, dynamic>);
-    map[profile.email] = profile.toJson();
-    await prefs.setString(_kProfiles, jsonEncode(map));
+  // Agora retorna uma String se houver erro (ex: Username já existe)
+  Future<String?> save(UserProfile profile) async {
+    final user = _supabase.auth.currentUser;
+    if (user == null) return "Utilizador não encontrado.";
+
+    try {
+      await _supabase.from('profiles').upsert({
+        'id': user.id,
+        'username': profile.username.isEmpty ? null : profile.username, // Se estiver vazio, grava como nulo
+        'nickname': profile.nickname,
+        'ign': profile.ign,
+        'role': profile.role,
+        'looking': profile.looking,
+        'mains': profile.mains,
+      });
+      return null; // Sucesso!
+    } on PostgrestException catch (e) {
+      // Como na BD o username tem "UNIQUE", isto apanha o erro se alguém já tiver esse username
+      if (e.message.contains("unique constraint") || e.message.contains("profiles_username_key")) {
+        return "Este Username já está a ser utilizado!";
+      }
+      return "Erro ao guardar na base de dados.";
+    } catch (e) {
+      return "Erro desconhecido ao guardar.";
+    }
   }
 }

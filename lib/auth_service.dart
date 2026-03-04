@@ -1,69 +1,70 @@
-import 'dart:convert';
-import 'package:crypto/crypto.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class AuthService {
-  static const _kUsers = 'users_v1'; // map email -> passHash
-  static const _kLoggedIn = 'logged_in_v1';
-  static const _kCurrentEmail = 'current_email_v1';
+  final _supabase = Supabase.instance.client;
 
   Future<bool> isLoggedIn() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getBool(_kLoggedIn) ?? false;
+    return _supabase.auth.currentSession != null;
   }
 
   Future<String?> currentEmail() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_kCurrentEmail);
+    return _supabase.auth.currentUser?.email;
   }
 
-  String _hash(String password) {
-    final bytes = utf8.encode(password);
-    return sha256.convert(bytes).toString();
-  }
-
-  Future<Map<String, String>> _loadUsers() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_kUsers);
-    if (raw == null || raw.isEmpty) return {};
-    final m = jsonDecode(raw) as Map<String, dynamic>;
-    return m.map((k, v) => MapEntry(k, v.toString()));
-  }
-
-  Future<void> _saveUsers(Map<String, String> users) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kUsers, jsonEncode(users));
-  }
-
+  // O Registo agora apenas envia o email com o código
   Future<String?> register({required String email, required String password}) async {
-    final e = email.trim().toLowerCase();
-    if (e.isEmpty || password.isEmpty) return 'Preenche email e password.';
-    final users = await _loadUsers();
-    if (users.containsKey(e)) return 'Esta conta já existe.';
-    users[e] = _hash(password);
-    await _saveUsers(users);
-    // auto login
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_kLoggedIn, true);
-    await prefs.setString(_kCurrentEmail, e);
-    return null;
+    try {
+      if (email.trim().isEmpty || password.isEmpty) return 'Preenche o e-mail e a palavra-passe.';
+      
+      await _supabase.auth.signUp(
+        email: email.trim(),
+        password: password,
+      );
+      return null; // Sucesso, o email foi enviado!
+    } on AuthException catch (e) {
+      return e.message; 
+    } catch (e) {
+      return 'Ocorreu um erro desconhecido ao registar.';
+    }
+  }
+
+  // NOVA FUNÇÃO: Validar o código de 6 dígitos
+  Future<String?> verifyCode({required String email, required String code}) async {
+    try {
+      await _supabase.auth.verifyOTP(
+        type: OtpType.signup,
+        email: email.trim(),
+        token: code.trim(),
+      );
+      return null; // Sucesso! Conta verificada.
+    } on AuthException catch (e) {
+      return 'Código inválido ou expirado.';
+    } catch (e) {
+      return 'Erro ao verificar o código.';
+    }
   }
 
   Future<String?> login({required String email, required String password}) async {
-    final e = email.trim().toLowerCase();
-    final users = await _loadUsers();
-    if (!users.containsKey(e)) return 'Conta não existe.';
-    if (users[e] != _hash(password)) return 'Password errada.';
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_kLoggedIn, true);
-    await prefs.setString(_kCurrentEmail, e);
-    return null;
+    try {
+      if (email.trim().isEmpty || password.isEmpty) return 'Preenche o e-mail e a palavra-passe.';
+
+      await _supabase.auth.signInWithPassword(
+        email: email.trim(),
+        password: password,
+      );
+      return null;
+    } on AuthException catch (e) {
+      // Se a conta não estiver verificada, ele dá erro aqui
+      if (e.message.contains("Email not confirmed")) {
+        return "Por favor, verifica o teu e-mail primeiro.";
+      }
+      return "E-mail ou palavra-passe incorretos."; 
+    } catch (e) {
+      return 'Ocorreu um erro ao iniciar sessão.';
+    }
   }
 
   Future<void> logout() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_kLoggedIn, false);
-    // mantém email guardado se quiseres, mas vou limpar
-    await prefs.remove(_kCurrentEmail);
+    await _supabase.auth.signOut();
   }
 }
